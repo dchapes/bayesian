@@ -1,13 +1,18 @@
 package bayesian
 
-import "testing"
-import "fmt"
-import "os"
+import (
+	"io"
+	"os"
+	"testing"
+)
 
 const (
 	Good Class = "good"
 	Bad  Class = "bad"
 )
+
+// Verify we implemented expected interfaces.
+var _ io.WriterTo = (*Classifier)(nil)
 
 func Assert(t *testing.T, condition bool, args ...interface{}) {
 	if !condition {
@@ -26,6 +31,9 @@ func TestEmpty(t *testing.T) {
 func TestNoClasses(t *testing.T) {
 	defer func() {
 		if err := recover(); err != nil {
+			if err != ErrTooFewClasses {
+				panic(err)
+			}
 			// we are good
 		}
 	}()
@@ -36,6 +44,9 @@ func TestNoClasses(t *testing.T) {
 func TestNotUnique(t *testing.T) {
 	defer func() {
 		if err := recover(); err != nil {
+			if err != ErrClassesNotUnique {
+				panic(err)
+			}
 			// we are good
 		}
 	}()
@@ -43,9 +54,25 @@ func TestNotUnique(t *testing.T) {
 	Assert(t, false, "should have panicked:", c)
 }
 
+func TestNotUniqueTfIdf(t *testing.T) {
+	defer func() {
+		if err := recover(); err != nil {
+			if err != ErrClassesNotUnique {
+				panic(err)
+			}
+			// we are good
+		}
+	}()
+	c := NewClassifierTfIdf("Good", "Good", "Bad", "Cow")
+	Assert(t, false, "should have panicked:", c)
+}
+
 func TestOneClass(t *testing.T) {
 	defer func() {
 		if err := recover(); err != nil {
+			if err != ErrTooFewClasses {
+				panic(err)
+			}
 			// we are good
 		}
 	}()
@@ -63,19 +90,19 @@ func TestObserve(t *testing.T) {
 	c.Observe("ugly", 1, Bad)
 
 	score, likely, strict := c.LogScores([]string{"the", "tall", "man"})
-	fmt.Printf("%v\n", score)
+	t.Logf("%v\n", score)
 	Assert(t, score[0] > score[1], "not good, round 1") // this is good
 	Assert(t, likely == 0, "not good, round 1")
 	Assert(t, strict == true, "not strict, round 1")
 
 	score, likely, strict = c.LogScores([]string{"poor", "ugly", "girl"})
-	fmt.Printf("%v\n", score)
+	t.Logf("%v\n", score)
 	Assert(t, score[0] < score[1]) // this is bad
 	Assert(t, likely == 1)
 	Assert(t, strict == true)
 
 	score, likely, strict = c.LogScores([]string{"the", "bad", "man"})
-	fmt.Printf("%v\n", score)
+	t.Logf("%v\n", score)
 	Assert(t, score[0] == score[1], "not the same") // same
 	Assert(t, likely == 0, "not good")              // first one is picked
 	Assert(t, strict == false, "not strict")
@@ -87,19 +114,19 @@ func TestLearn(t *testing.T) {
 	c.Learn([]string{"bald", "poor", "ugly"}, Bad)
 
 	score, likely, strict := c.LogScores([]string{"the", "tall", "man"})
-	fmt.Printf("%v\n", score)
+	t.Logf("%v\n", score)
 	Assert(t, score[0] > score[1], "not good, round 1") // this is good
 	Assert(t, likely == 0, "not good, round 1")
 	Assert(t, strict == true, "not strict, round 1")
 
 	score, likely, strict = c.LogScores([]string{"poor", "ugly", "girl"})
-	fmt.Printf("%v\n", score)
+	t.Logf("%v\n", score)
 	Assert(t, score[0] < score[1]) // this is bad
 	Assert(t, likely == 1)
 	Assert(t, strict == true)
 
 	score, likely, strict = c.LogScores([]string{"the", "bad", "man"})
-	fmt.Printf("%v\n", score)
+	t.Logf("%v\n", score)
 	Assert(t, score[0] == score[1], "not the same") // same
 	Assert(t, likely == 0, "not good")              // first one is picked
 	Assert(t, strict == false, "not strict")
@@ -111,19 +138,19 @@ func TestProbScores(t *testing.T) {
 	c.Learn([]string{"bald", "poor", "ugly"}, Bad)
 
 	score, likely, strict := c.ProbScores([]string{"the", "tall", "man"})
-	fmt.Printf("%v\n", score)
+	t.Logf("%v\n", score)
 	Assert(t, score[0] > score[1], "not good, round 1") // this is good
 	Assert(t, likely == 0, "not good, round 1")
 	Assert(t, strict == true, "not strict, round 1")
 
 	score, likely, strict = c.ProbScores([]string{"poor", "ugly", "girl"})
-	fmt.Printf("%v\n", score)
+	t.Logf("%v\n", score)
 	Assert(t, score[0] < score[1]) // this is bad
 	Assert(t, likely == 1)
 	Assert(t, strict == true)
 
 	score, likely, strict = c.ProbScores([]string{"the", "bad", "man"})
-	fmt.Printf("%v\n", score)
+	t.Logf("%v\n", score)
 	Assert(t, score[0] == score[1], "not the same") // same
 	Assert(t, likely == 0, "not good")              // first one is picked
 	Assert(t, strict == false, "not strict")
@@ -146,14 +173,13 @@ func TestSeenLearned(t *testing.T) {
 	scores, _, _, _ = c.SafeProbScores(doc1)
 	scores, _, _, _ = c.SafeProbScores(doc2)
 	scores, _, _, _ = c.SafeProbScores(doc3)
-	println(scores)
+	t.Log(scores)
 	Assert(t, c.Learned() == 2, "learned")
 	Assert(t, c.Seen() == 9, "seen")
 	count := c.WordCount()
 	Assert(t, count[0] == 3, "counted-good")
 	Assert(t, count[1] == 3, "counted-bad")
 	Assert(t, c.Learned() == 2, "learned")
-
 }
 
 func TestInduceUnderflow(t *testing.T) {
@@ -167,7 +193,7 @@ func TestInduceUnderflow(t *testing.T) {
 	// will have "defaultProb", which is small
 	scores, _, _, err := c.SafeProbScores(document)
 	Assert(t, err == ErrUnderflow, "Underflow error not detected")
-	println(scores)
+	t.Log(scores)
 }
 
 func TestLogScores(t *testing.T) {
@@ -187,9 +213,9 @@ func TestGobs(t *testing.T) {
 	Assert(t, err == nil, "could not write:", err)
 	d, err := NewClassifierFromFile("test.ser")
 	Assert(t, err == nil, "could not read:", err)
-	fmt.Printf("%v\n", d)
+	t.Logf("%v\n", d)
 	scores, _, _ := d.LogScores([]string{"a", "b", "c"})
-	println(scores)
+	t.Log(scores)
 	data := d.datas[Good]
 	Assert(t, data.Total == 3)
 	Assert(t, data.getWordProb("tall") == float64(1)/float64(3), "tall")
@@ -213,9 +239,9 @@ func TestClassByFile(t *testing.T) {
 	d := NewClassifier(Good, Bad)
 	err = d.ReadClassFromFile(Good, ".")
 	Assert(t, err == nil, "could not read:", err)
-	fmt.Printf("%v\n", d)
+	t.Logf("%v\n", d)
 	scores, _, _ := d.LogScores([]string{"a", "b", "c"})
-	println(scores)
+	t.Log(scores)
 	data := d.datas[Good]
 	Assert(t, data.Total == 3)
 	Assert(t, data.getWordProb("tall") == float64(1)/float64(3), "tall")
@@ -252,12 +278,15 @@ func TestTfIdClassifier_SanityChecks(t *testing.T) {
 
 	defer func() {
 		if err := recover(); err != nil {
+			if s, ok := err.(string); !ok ||
+				s != "Using a TF-IDF classifier. Please call ConvertTermsFreqToTfIdf before calling LogScores." {
+				panic(err)
+			}
 			// we are good
 		}
 	}()
 	c.LogScores([]string{"a", "b", "c"})
 	Assert(t, false, "Should have panicked:Need to run ConvertTermsFreqToTfIdf() first..", c)
-
 }
 
 func TestTfIdClassifier_Tf_Checks(t *testing.T) {
@@ -283,7 +312,6 @@ func TestTfIdClassifier_Tf_Checks(t *testing.T) {
 
 	// Check for term frequency's per 'document' (blonde)
 	Assert(t, data.FreqTfs["blonde"][0] == float64(0.5))
-
 }
 
 func TestTfIdClassifier_ConvertToTfIdf(t *testing.T) {
@@ -309,7 +337,6 @@ func TestTfIdClassifier_ConvertToTfIdf(t *testing.T) {
 	Assert(t, data.FreqTfs["tall"][0] == float64(0.11664504260744213))
 	Assert(t, data.FreqTfs["tall"][1] == float64(0.16440195389316542))
 	Assert(t, data.FreqTfs["tall"][2] == float64(0.28104699650060755))
-
 }
 
 func TestTfIdClassifier_CheckForDoubleConvert(t *testing.T) {
@@ -326,12 +353,15 @@ func TestTfIdClassifier_CheckForDoubleConvert(t *testing.T) {
 
 	defer func() {
 		if err := recover(); err != nil {
+			if s, ok := err.(string); !ok ||
+				s != "Cannot call ConvertTermsFreqToTfIdf more than once. Reset and relearn to reconvert." {
+				panic(err)
+			}
 			// we are good
 		}
 	}()
 	c.ConvertTermsFreqToTfIdf()
 	Assert(t, false, "Should have panicked:Can only run ConvertTermsFreqToTfIdf() once after a learning cycle.", c)
-
 }
 
 func TestTfIdClassifier_LogScore(t *testing.T) {
@@ -352,6 +382,5 @@ func TestTfIdClassifier_LogScore(t *testing.T) {
 	Assert(t, score[0] > score[1], "Class 'Good' should be closer to 0 than Class 'Bad' - both will be negative") // this is good
 	Assert(t, likely == 0, "Class should be 'Good'")
 	Assert(t, strict == true, "No tie's")
-	fmt.Printf("%#v", score)
-
+	t.Logf("%#v", score)
 }

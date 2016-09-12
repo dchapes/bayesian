@@ -65,10 +65,14 @@ import (
 
 // defaultProb is the tiny non-zero probability that a word
 // we have not seen before appears in the class.
-const defaultProb = 0.00000000001
+const defaultProb = 1e-11
 
-// ErrUnderflow is returned when an underflow is detected.
-var ErrUnderflow = errors.New("possible underflow detected")
+var (
+	// ErrUnderflow is returned when an underflow is detected.
+	ErrUnderflow        = errors.New("possible underflow detected")
+	ErrTooFewClasses    = errors.New("provide at least two classes")
+	ErrClassesNotUnique = errors.New("classes must be unique")
+)
 
 // Class defines a class that the classifier will filter:
 // C = {C_1, ..., C_n}. You should define your classes as a
@@ -129,6 +133,9 @@ func (d *classData) getWordProb(word string) float64 {
 	value, ok := d.Freqs[word]
 	if !ok {
 		return defaultProb
+		// Issue: when d.Total >= 1/defaultProb the default of an
+		// unseen word will be higher than a word seen once.
+		// How about something like 0.1 / float(d.Total) ?
 	}
 	return float64(value) / float64(d.Total)
 }
@@ -150,22 +157,15 @@ func (d *classData) getWordsProb(words []string) (prob float64) {
 // NewClassifierTfIdf returns a new classifier. The classes provided
 // should be at least 2 in number and unique, or this method will
 // panic.
+//
+// NOTE: API should change to return error instead of panicing.
 func NewClassifierTfIdf(classes ...Class) (c *Classifier) {
 	n := len(classes)
-
 	// check size
 	if n < 2 {
-		panic("provide at least two classes")
+		panic(ErrTooFewClasses)
 	}
 
-	// check uniqueness
-	check := make(map[Class]bool, n)
-	for _, class := range classes {
-		check[class] = true
-	}
-	if len(check) != n {
-		panic("classes must be unique")
-	}
 	// create the classifier
 	c = &Classifier{
 		Classes: classes,
@@ -173,6 +173,9 @@ func NewClassifierTfIdf(classes ...Class) (c *Classifier) {
 		tfIdf:   true,
 	}
 	for _, class := range classes {
+		if _, ok := c.datas[class]; ok {
+			panic(ErrClassesNotUnique)
+		}
 		c.datas[class] = newClassData()
 	}
 	return
@@ -181,22 +184,15 @@ func NewClassifierTfIdf(classes ...Class) (c *Classifier) {
 // NewClassifier returns a new classifier. The classes provided
 // should be at least 2 in number and unique, or this method will
 // panic.
+//
+// NOTE: API should change to return error instead of panicing.
 func NewClassifier(classes ...Class) (c *Classifier) {
 	n := len(classes)
-
 	// check size
 	if n < 2 {
-		panic("provide at least two classes")
+		panic(ErrTooFewClasses)
 	}
 
-	// check uniqueness
-	check := make(map[Class]bool, n)
-	for _, class := range classes {
-		check[class] = true
-	}
-	if len(check) != n {
-		panic("classes must be unique")
-	}
 	// create the classifier
 	c = &Classifier{
 		Classes:         classes,
@@ -205,6 +201,9 @@ func NewClassifier(classes ...Class) (c *Classifier) {
 		DidConvertTfIdf: false,
 	}
 	for _, class := range classes {
+		if _, ok := c.datas[class]; ok {
+			panic(ErrClassesNotUnique)
+		}
 		c.datas[class] = newClassData()
 	}
 	return
@@ -218,6 +217,7 @@ func NewClassifierFromFile(name string) (c *Classifier, err error) {
 	if err != nil {
 		return nil, err
 	}
+	defer file.Close()
 	return NewClassifierFromReader(file)
 }
 
@@ -237,16 +237,16 @@ func NewClassifierFromReader(r io.Reader) (c *Classifier, err error) {
 // not implemented here.
 func (c *Classifier) getPriors() (priors []float64) {
 	n := len(c.Classes)
-	priors = make([]float64, n, n)
-	sum := 0
-	for index, class := range c.Classes {
-		total := c.datas[class].Total
-		priors[index] = float64(total)
+	priors = make([]float64, n)
+	sum := 0.0
+	for i, class := range c.Classes {
+		total := float64(c.datas[class].Total)
+		priors[i] = total
 		sum += total
 	}
 	if sum != 0 {
-		for i := 0; i < n; i++ {
-			priors[i] /= float64(sum)
+		for i := range priors {
+			priors[i] /= sum
 		}
 	}
 	return
@@ -273,9 +273,9 @@ func (c *Classifier) IsTfIdf() bool {
 // each class in the lifetime of the classifier.
 func (c *Classifier) WordCount() (result []int) {
 	result = make([]int, len(c.Classes))
-	for inx, class := range c.Classes {
+	for i, class := range c.Classes {
 		data := c.datas[class]
-		result[inx] = data.Total
+		result[i] = data.Total
 	}
 	return
 }
@@ -333,13 +333,11 @@ func (c *Classifier) ConvertTermsFreqToTfIdf() {
 		panic("Cannot call ConvertTermsFreqToTfIdf more than once. Reset and relearn to reconvert.")
 	}
 
-	for className, _ := range c.datas {
-
-		for wIndex, _ := range c.datas[className].FreqTfs {
+	for className := range c.datas {
+		for wIndex := range c.datas[className].FreqTfs {
 			tfIdfAdder := float64(0)
 
-			for tfSampleIndex, _ := range c.datas[className].FreqTfs[wIndex] {
-
+			for tfSampleIndex := range c.datas[className].FreqTfs[wIndex] {
 				// we always want a possitive TF-IDF score.
 				tf := c.datas[className].FreqTfs[wIndex][tfSampleIndex]
 				c.datas[className].FreqTfs[wIndex][tfSampleIndex] = math.Log1p(tf) * math.Log1p(float64(c.learned)/float64(c.datas[className].Total))
@@ -348,7 +346,6 @@ func (c *Classifier) ConvertTermsFreqToTfIdf() {
 			// convert the 'counts' to TF-IDF's
 			c.datas[className].Freqs[wIndex] = tfIdfAdder
 		}
-
 	}
 
 	// sanity check
@@ -368,20 +365,20 @@ func (c *Classifier) ConvertTermsFreqToTfIdf() {
 // The index j of the score corresponds to the class given
 // by c.Classes[j].
 //
-// Additionally returned are "inx" and "strict" values. The
-// inx corresponds to the maximum score in the array. If more
+// Additionally returned are "i" and "strict" values. The
+// i corresponds to the maximum score in the array. If more
 // than one of the scores holds the maximum values, then
 // strict is false.
 //
 // Unlike c.Probabilities(), this function is not prone to
 // floating point underflow and is relatively safe to use.
-func (c *Classifier) LogScores(document []string) (scores []float64, inx int, strict bool) {
+func (c *Classifier) LogScores(document []string) (scores []float64, i int, strict bool) {
 	if c.tfIdf && !c.DidConvertTfIdf {
 		panic("Using a TF-IDF classifier. Please call ConvertTermsFreqToTfIdf before calling LogScores.")
 	}
 
 	n := len(c.Classes)
-	scores = make([]float64, n, n)
+	scores = make([]float64, n)
 	priors := c.getPriors()
 
 	// calculate the score for each class
@@ -395,9 +392,9 @@ func (c *Classifier) LogScores(document []string) (scores []float64, inx int, st
 		}
 		scores[index] = score
 	}
-	inx, strict = findMax(scores)
+	i, strict = findMax(scores)
 	atomic.AddInt32(&c.seen, 1)
-	return scores, inx, strict
+	return scores, i, strict
 }
 
 // ProbScores works the same as LogScores, but delivers
@@ -410,14 +407,14 @@ func (c *Classifier) LogScores(document []string) (scores []float64, inx int, st
 // never seen before. Depending on the application, this
 // may or may not be a concern. Consider using SafeProbScores()
 // instead.
-func (c *Classifier) ProbScores(doc []string) (scores []float64, inx int, strict bool) {
+func (c *Classifier) ProbScores(doc []string) (scores []float64, i int, strict bool) {
 	if c.tfIdf && !c.DidConvertTfIdf {
 		panic("Using a TF-IDF classifier. Please call ConvertTermsFreqToTfIdf before calling ProbScores.")
 	}
 	n := len(c.Classes)
-	scores = make([]float64, n, n)
+	scores = make([]float64, n)
 	priors := c.getPriors()
-	sum := float64(0)
+	sum := 0.0
 	// calculate the score for each class
 	for index, class := range c.Classes {
 		data := c.datas[class]
@@ -430,12 +427,12 @@ func (c *Classifier) ProbScores(doc []string) (scores []float64, inx int, strict
 		scores[index] = score
 		sum += score
 	}
-	for i := 0; i < n; i++ {
+	for i := range scores {
 		scores[i] /= sum
 	}
-	inx, strict = findMax(scores)
+	i, strict = findMax(scores)
 	atomic.AddInt32(&c.seen, 1)
-	return scores, inx, strict
+	return scores, i, strict
 }
 
 // SafeProbScores works the same as ProbScores, but is
@@ -449,46 +446,46 @@ func (c *Classifier) ProbScores(doc []string) (scores []float64, inx int, strict
 //
 // Underflow detection is more costly because it also
 // has to make additional log score calculations.
-func (c *Classifier) SafeProbScores(doc []string) (scores []float64, inx int, strict bool, err error) {
+func (c *Classifier) SafeProbScores(doc []string) (scores []float64, i int, strict bool, err error) {
 	if c.tfIdf && !c.DidConvertTfIdf {
 		panic("Using a TF-IDF classifier. Please call ConvertTermsFreqToTfIdf before calling SafeProbScores.")
 	}
 
 	n := len(c.Classes)
-	scores = make([]float64, n, n)
-	logScores := make([]float64, n, n)
+	scores = make([]float64, n)
+	logScores := make([]float64, n)
 	priors := c.getPriors()
-	sum := float64(0)
+	sum := 0.0
 	// calculate the score for each class
-	for index, class := range c.Classes {
+	for i, class := range c.Classes {
 		data := c.datas[class]
 		// c is the sum of the logarithms
 		// as outlined in the refresher
-		score := priors[index]
-		logScore := math.Log(priors[index])
+		score := priors[i]
+		logScore := math.Log(priors[i])
 		for _, word := range doc {
 			p := data.getWordProb(word)
 			score *= p
 			logScore += math.Log(p)
 		}
-		scores[index] = score
-		logScores[index] = logScore
+		scores[i] = score
+		logScores[i] = logScore
 		sum += score
 	}
-	for i := 0; i < n; i++ {
+	for i := range scores {
 		scores[i] /= sum
 	}
-	inx, strict = findMax(scores)
+	i, strict = findMax(scores)
 	logInx, logStrict := findMax(logScores)
 
 	// detect underflow -- the size
 	// relation between scores and logScores
 	// must be preserved or something is wrong
-	if inx != logInx || strict != logStrict {
+	if i != logInx || strict != logStrict {
 		err = ErrUnderflow
 	}
 	atomic.AddInt32(&c.seen, 1)
-	return scores, inx, strict, err
+	return scores, i, strict, err
 }
 
 // WordFrequencies returns a matrix of word frequencies that currently
@@ -502,10 +499,10 @@ func (c *Classifier) SafeProbScores(doc []string) (scores []float64, inx int, st
 func (c *Classifier) WordFrequencies(words []string) (freqMatrix [][]float64) {
 	n, l := len(c.Classes), len(words)
 	freqMatrix = make([][]float64, n)
-	for i, _ := range freqMatrix {
+	for i := range freqMatrix {
 		arr := make([]float64, l)
 		data := c.datas[c.Classes[i]]
-		for j, _ := range arr {
+		for j := range arr {
 			arr[j] = data.getWordProb(words[j])
 		}
 		freqMatrix[i] = arr
@@ -520,22 +517,26 @@ func (c *Classifier) WordsByClass(class Class) (freqMap map[string]float64) {
 	for word, cnt := range c.datas[class].Freqs {
 		freqMap[word] = float64(cnt) / float64(c.datas[class].Total)
 	}
-
 	return freqMap
 }
 
 // Serialize this classifier to a file.
 func (c *Classifier) WriteToFile(name string) (err error) {
-	file, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE, 0644)
+	file, err := os.Create(name)
 	if err != nil {
 		return err
 	}
-	return c.WriteTo(file)
+	_, err = c.WriteTo(file)
+	cerr := file.Close()
+	if err == nil {
+		err = cerr
+	}
+	return err
 }
 
 // WriteClassesToFile writes all classes to files.
 func (c *Classifier) WriteClassesToFile(rootPath string) (err error) {
-	for name, _ := range c.datas {
+	for name := range c.datas {
 		c.WriteClassToFile(name, rootPath)
 	}
 	return
@@ -544,20 +545,36 @@ func (c *Classifier) WriteClassesToFile(rootPath string) (err error) {
 func (c *Classifier) WriteClassToFile(name Class, rootPath string) (err error) {
 	data := c.datas[name]
 	fileName := filepath.Join(rootPath, string(name))
-	file, err := os.OpenFile(fileName, os.O_WRONLY|os.O_CREATE, 0644)
+	file, err := os.Create(fileName)
 	if err != nil {
 		return err
 	}
 	enc := gob.NewEncoder(file)
 	err = enc.Encode(data)
+	cerr := file.Close()
+	if err == nil {
+		err = cerr
+	}
 	return
 }
 
 // Serialize this classifier to GOB and write to Writer.
-func (c *Classifier) WriteTo(w io.Writer) (err error) {
-	enc := gob.NewEncoder(w)
+func (c *Classifier) WriteTo(w io.Writer) (n int64, err error) {
+	wc := writeCounter{Writer: w}
+	enc := gob.NewEncoder(&wc)
 	err = enc.Encode(&serializableClassifier{c.Classes, c.learned, int(c.seen), c.datas, c.tfIdf, c.DidConvertTfIdf})
 
+	return wc.n, err
+}
+
+type writeCounter struct {
+	io.Writer
+	n int64
+}
+
+func (w *writeCounter) Write(p []byte) (n int, err error) {
+	n, err = w.Writer.Write(p)
+	w.n += int64(n)
 	return
 }
 
@@ -566,10 +583,10 @@ func (c *Classifier) WriteTo(w io.Writer) (err error) {
 func (c *Classifier) ReadClassFromFile(class Class, location string) (err error) {
 	fileName := filepath.Join(location, string(class))
 	file, err := os.Open(fileName)
-
 	if err != nil {
 		return err
 	}
+	defer file.Close()
 
 	dec := gob.NewDecoder(file)
 	w := new(classData)
@@ -584,14 +601,13 @@ func (c *Classifier) ReadClassFromFile(class Class, location string) (err error)
 // maximum is strict -- that is, it is the single unique
 // maximum from the set -- then strict has return value
 // true. Otherwise it is false.
-func findMax(scores []float64) (inx int, strict bool) {
-	inx = 0
+func findMax(scores []float64) (i int, strict bool) {
 	strict = true
-	for i := 1; i < len(scores); i++ {
-		if scores[inx] < scores[i] {
-			inx = i
+	for j := 1; j < len(scores); j++ {
+		if scores[i] < scores[j] {
+			i = j
 			strict = true
-		} else if scores[inx] == scores[i] {
+		} else if scores[i] == scores[j] {
 			strict = false
 		}
 	}
